@@ -102,7 +102,21 @@ přímo použitelné i po výměně adaptéru.
 
 - **`docker-entrypoint.sh`** — smazat, nahradit migrací spuštěnou přímo z aplikace (viz výše) nebo jednoduchým shell wrapperem `migrate && node server.js`.
 
-- **`compose.yaml`** — zjednodušit healthcheck/env (odpadá `WRANGLER_WRITE_LOGS`), port a volume `/data` zůstávají.
+- **`compose.yaml`** — zjednodušit healthcheck/env (odpadá `WRANGLER_WRITE_LOGS`). Zároveň při téhle migraci **přejít z pojmenovaného Docker volume na bind mount**:
+  ```yaml
+  volumes:
+    - ./data:/data   # místo `fve-data:/data` + `volumes: { fve-data: ... }`
+  ```
+  Důvod: pojmenovaný volume leží schovaný uvnitř Dockerovy interní storage
+  (na NASu jsme se k souboru museli dostat přes pomocný `alpine` kontejner).
+  Bind mount na `/volume1/docker/fve-portal/data` (tj. `./data` relativně ke
+  `compose.yaml`) je normální viditelná složka ve File Station, jde ji
+  zálohovat přes Synology Hyper Backup / Snapshot Replication a SQLite
+  soubor jde kdykoliv přímo zkopírovat/prohlédnout. Jediné riziko je
+  UID/GID nesoulad mezi kontejnerem a hostitelským FS — ověřit, že proces
+  v kontejneru (uid, pod kterým běží `node server.js`) má zapisovací práva
+  do namountované složky; případně nastavit `user:` v compose nebo `chmod`
+  složku na NASu předem.
 
 - **`.openai/hosting.json`** — ponechat nebo smazat dle uvážení; s odstraněním `@openai/sites-vite-plugin` přestává mít efekt, ale `modelContext.registerTool` volání v `fve-dashboard.tsx` je nezávislé feature-detection a funguje i bez něj.
 
@@ -141,8 +155,10 @@ nastartovat s čistou databází a starý volume zatím netýkat:
 
 1. Starý Docker volume (`fve-portal-data`, Miniflare formát) zůstává beze
    změny jako rollback — nemazat, nepřepisovat.
-2. Nový kontejner (Next.js + `better-sqlite3`) běží s **novým** volume/cestou
-   (`/data/fve.db`), který při prvním startu neexistuje.
+2. Nový kontejner (Next.js + `better-sqlite3`) běží s **novým** bind-mount
+   adresářem (`/volume1/docker/fve-portal/data` → `/data/fve.db`), který při
+   prvním startu neexistuje — vytvořit ho na NASu předem (`mkdir -p`) a
+   ověřit zápisová práva pro uid, pod kterým běží kontejner.
 3. Migrátor při startu vytvoří tabulky z `drizzle/*.sql` (jsou to čisté
    SQLite DDL, funguje to i tady) a založí si vlastní historii migrací;
    appka si sama doplní seed data z Excelu stejnou logikou jako dnes
@@ -161,7 +177,8 @@ nastartovat s čistou databází a starý volume zatím netýkat:
 3. `Dockerfile`, `docker-entrypoint.sh` (smazat/zjednodušit), `compose.yaml`.
 4. `README.md`, `DOCKER.md`.
 5. Lokální ověření: `docker compose up --build`, zkontrolovat `/api/data` a dashboard v prohlížeči, ověřit že `db:generate` pořád funguje.
-6. Nasazení na Synology s **čistou databází** podle postupu výše (nový volume,
-   žádný import staré databáze) — tar přes SSH + `docker compose up --build -d`
+6. Nasazení na Synology s **čistou databází** podle postupu výše (nový
+   bind-mount adresář místo starého named volume, žádný import staré
+   databáze) — tar přes SSH + `docker compose up --build -d`
    (viz `DOCKER.md` a skill `synology-nas`).
 7. Import starých dat (pokud bude ještě potřeba) až jako pozdější samostatný krok.
