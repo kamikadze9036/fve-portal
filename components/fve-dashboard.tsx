@@ -1,7 +1,7 @@
 'use client';
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, BatteryCharging, CircleDollarSign, Droplets, Gauge, Plus, Sun, TrendingDown, Zap } from 'lucide-react';
+import { AlertTriangle, Archive, BatteryCharging, CircleDollarSign, Droplets, Gauge, Plus, Sun, TrendingDown, Zap } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -19,8 +19,11 @@ type ElectricityReading = {
 };
 type WaterReading = { id: number; measuredAt: string; mainMeterM3: number | null; gardenMeterM3: number | null; mainConsumptionM3: number | null; gardenConsumptionM3: number | null; householdConsumptionM3: number | null; };
 type HeatPumpReading = { id: number; period: string; heatOutputKwh: number | null; hotWaterOutputKwh: number | null; heatInputKwh: number | null; hotWaterInputKwh: number | null; heatCop: number | null; hotWaterCop: number | null; sourceDate: string | null; intervalEnd: string | null; intervalDays: number | null; qualityNote: string | null; };
-export type DashboardData = { electricity: ElectricityReading[]; water: WaterReading[]; heatPump: HeatPumpReading[] };
-type Section = 'electricity' | 'water' | 'heat';
+type MeterReading = { id: number; readingDate: string; meterNtKwh: number; meterVtKwh: number; note: string | null; qualityStatus: string };
+type RawWaterReading = { id: number; measuredAt: string; mainMeterM3: number; gardenMeterM3: number; note: string | null; qualityStatus: string };
+type RawHeatReading = { id: number; measuredAt: string; heatOutputKwh: number | null; hotWaterOutputKwh: number | null; heatInputKwh: number | null; hotWaterInputKwh: number | null; note: string | null; qualityStatus: string };
+export type DashboardData = { electricity: ElectricityReading[]; water: WaterReading[]; heatPump: HeatPumpReading[]; electricityMeters?: MeterReading[]; waterMeters?: RawWaterReading[]; heatPumpMeters?: RawHeatReading[] };
+type Section = 'electricity' | 'water' | 'heat' | 'readings';
 
 const number = new Intl.NumberFormat('cs-CZ', { maximumFractionDigits: 0 });
 const decimal = new Intl.NumberFormat('cs-CZ', { maximumFractionDigits: 1 });
@@ -130,6 +133,7 @@ export function FveDashboard({ initialData }: { initialData: DashboardData }) {
           <NavButton active={section === 'electricity'} onClick={() => setSection('electricity')} icon={<Zap />}>Elektřina &amp; FVE</NavButton>
           <NavButton active={section === 'water'} onClick={() => setSection('water')} icon={<Droplets />}>Voda</NavButton>
           <NavButton active={section === 'heat'} onClick={() => setSection('heat')} icon={<BatteryCharging />}>Tepelné čerpadlo</NavButton>
+          <NavButton active={section === 'readings'} onClick={() => setSection('readings')} icon={<Plus />}>Odečty</NavButton>
           <div className="sidebar-note"><span>Datový model</span><strong>{data.electricity.length + data.water.length + data.heatPump.length} záznamů</strong><small>Elektřina, voda a tepelné čerpadlo v jedné databázi</small></div>
         </aside>
         <section className="workspace">
@@ -137,11 +141,33 @@ export function FveDashboard({ initialData }: { initialData: DashboardData }) {
           {section === 'electricity' && <ElectricityView rows={data.electricity.filter((row) => row.period.startsWith(year))} year={year} />}
           {section === 'water' && <WaterView rows={data.water} />}
           {section === 'heat' && <HeatView rows={data.heatPump.filter((row) => row.period.startsWith(year))} year={year} />}
+          {section === 'readings' && <ReadingsView data={data} refresh={refresh} onMessage={setMessage} />}
         </section>
       </div>
     </main>
   );
 }
+
+function ReadingsView({ data, refresh, onMessage }: { data: DashboardData; refresh: () => Promise<void>; onMessage: (message: string) => void }) {
+  const [saving, setSaving] = useState<string | null>(null);
+  const [electricity, setElectricity] = useState({ readingDate: new Date().toISOString().slice(0, 10), meterNtKwh: '', meterVtKwh: '', note: '' });
+  const [water, setWater] = useState({ measuredAt: new Date().toISOString().slice(0, 10), mainMeterM3: '', gardenMeterM3: '', note: '' });
+  const [heat, setHeat] = useState({ measuredAt: new Date().toISOString().slice(0, 10), heatOutputKwh: '', hotWaterOutputKwh: '', heatInputKwh: '', hotWaterInputKwh: '', note: '' });
+  const save = async (kind: 'electricity-meter' | 'water' | 'heat-pump', input: Record<string, string>) => {
+    setSaving(kind); onMessage('');
+    try { const payload = Object.fromEntries(Object.entries(input).map(([key, value]) => [key, key === 'note' || key.endsWith('Date') || key === 'measuredAt' ? value : value === '' ? null : Number(value)])); const response = await fetch(`/api/readings/${kind}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); const result = await response.json() as { error?: string }; if (!response.ok) throw new Error(result.error ?? 'Odečet se nepodařilo uložit.'); await refresh(); onMessage('Odečet byl uložen.'); } catch (error) { onMessage(error instanceof Error ? error.message : 'Odečet se nepodařilo uložit.'); } finally { setSaving(null); }
+  };
+  const archive = async (kind: 'electricity-meter' | 'water' | 'heat-pump', id: number) => { if (!window.confirm('Archivovat tento odečet? Zůstane zachovaný pro audit.')) return; setSaving(`${kind}-${id}`); try { const response = await fetch(`/api/readings/${kind}/${id}`, { method: 'DELETE' }); if (!response.ok) throw new Error('Odečet se nepodařilo archivovat.'); await refresh(); onMessage('Odečet byl archivován.'); } catch (error) { onMessage(error instanceof Error ? error.message : 'Odečet se nepodařilo archivovat.'); } finally { setSaving(null); } };
+  const meters = data.electricityMeters ?? []; const lastMeter = meters.filter((row) => row.qualityStatus === 'platné').at(-1); const pndPreview = electricity.meterNtKwh && electricity.meterVtKwh && lastMeter ? Number(electricity.meterNtKwh) + Number(electricity.meterVtKwh) - lastMeter.meterNtKwh - lastMeter.meterVtKwh : null;
+  const waterMeters = data.waterMeters ?? []; const previousWater = waterMeters.filter((row) => row.qualityStatus === 'platné').at(-1); const waterPreview = water.mainMeterM3 && water.gardenMeterM3 && previousWater ? { total: Number(water.mainMeterM3) - previousWater.mainMeterM3, household: Number(water.mainMeterM3) - previousWater.mainMeterM3 - (Number(water.gardenMeterM3) - previousWater.gardenMeterM3) } : null;
+  return <><div className="section-heading"><div><p className="eyebrow">Primární data</p><h2>Nové odečty</h2></div><p>Zadávejte kumulativní stavy. Intervaly a porovnání se dopočítají až z navazujících platných odečtů.</p></div><div className="reading-columns">
+    <Card className="reading-card"><CardHeader><CardTitle>Elektroměr PND</CardTitle></CardHeader><CardContent><form className="reading-form" onSubmit={(event) => { event.preventDefault(); void save('electricity-meter', electricity); }}><FormField label="Datum odečtu" name="readingDate" type="date" value={electricity.readingDate} onChange={(value) => setElectricity({ ...electricity, readingDate: value })} required /><FormField label="Stav NT (kWh)" name="meterNtKwh" value={electricity.meterNtKwh} onChange={(value) => setElectricity({ ...electricity, meterNtKwh: value })} required /><FormField label="Stav VT (kWh)" name="meterVtKwh" value={electricity.meterVtKwh} onChange={(value) => setElectricity({ ...electricity, meterVtKwh: value })} required /><FormField label="Poznámka" name="electricityNote" type="text" value={electricity.note} onChange={(value) => setElectricity({ ...electricity, note: value })} /><p className="reading-preview">Odběr od posledního odečtu: <strong>{pndPreview == null ? 'doplní se po zadání' : `${number.format(pndPreview)} kWh`}</strong></p><Button type="submit" disabled={saving === 'electricity-meter'}>{saving === 'electricity-meter' ? 'Ukládám…' : 'Uložit PND'}</Button></form><ReadingList rows={meters} kind="electricity-meter" value={(row) => `${number.format(row.meterNtKwh)} / ${number.format(row.meterVtKwh)} kWh`} date={(row) => row.readingDate} saving={saving} archive={archive} /></CardContent></Card>
+    <Card className="reading-card"><CardHeader><CardTitle>Vodoměry</CardTitle></CardHeader><CardContent><form className="reading-form" onSubmit={(event) => { event.preventDefault(); void save('water', water); }}><FormField label="Datum odečtu" name="measuredAt" type="date" value={water.measuredAt} onChange={(value) => setWater({ ...water, measuredAt: value })} required /><FormField label="Hlavní stav (m³)" name="mainMeterM3" value={water.mainMeterM3} onChange={(value) => setWater({ ...water, mainMeterM3: value })} required /><FormField label="Zálivka stav (m³)" name="gardenMeterM3" value={water.gardenMeterM3} onChange={(value) => setWater({ ...water, gardenMeterM3: value })} required /><FormField label="Poznámka" name="waterNote" type="text" value={water.note} onChange={(value) => setWater({ ...water, note: value })} /><p className="reading-preview">Pro vodné a stočné: <strong>{waterPreview == null ? 'doplní se po zadání' : `${decimal.format(waterPreview.household)} m³`}</strong></p><Button type="submit" disabled={saving === 'water'}>{saving === 'water' ? 'Ukládám…' : 'Uložit vodu'}</Button></form><ReadingList rows={waterMeters} kind="water" value={(row) => `${decimal.format(row.mainMeterM3)} / ${decimal.format(row.gardenMeterM3)} m³`} date={(row) => row.measuredAt} saving={saving} archive={archive} /></CardContent></Card>
+    <Card className="reading-card"><CardHeader><CardTitle>Tepelné čerpadlo</CardTitle></CardHeader><CardContent><form className="reading-form" onSubmit={(event) => { event.preventDefault(); void save('heat-pump', heat); }}><FormField label="Datum odečtu" name="measuredAt" type="date" value={heat.measuredAt} onChange={(value) => setHeat({ ...heat, measuredAt: value })} required /><FormField label="Dodané teplo (kWh)" name="heatOutputKwh" value={heat.heatOutputKwh} onChange={(value) => setHeat({ ...heat, heatOutputKwh: value })} /><FormField label="Dodané TUV (kWh)" name="hotWaterOutputKwh" value={heat.hotWaterOutputKwh} onChange={(value) => setHeat({ ...heat, hotWaterOutputKwh: value })} /><FormField label="Příkon topení (kWh)" name="heatInputKwh" value={heat.heatInputKwh} onChange={(value) => setHeat({ ...heat, heatInputKwh: value })} /><FormField label="Příkon TUV (kWh)" name="hotWaterInputKwh" value={heat.hotWaterInputKwh} onChange={(value) => setHeat({ ...heat, hotWaterInputKwh: value })} /><FormField label="Poznámka" name="heatNote" type="text" value={heat.note} onChange={(value) => setHeat({ ...heat, note: value })} /><Button type="submit" disabled={saving === 'heat-pump'}>{saving === 'heat-pump' ? 'Ukládám…' : 'Uložit TČ'}</Button></form><ReadingList rows={data.heatPumpMeters ?? []} kind="heat-pump" value={(row) => `${formatKwh(row.heatOutputKwh)} · ${formatKwh(row.heatInputKwh)}`} date={(row) => row.measuredAt} saving={saving} archive={archive} /></CardContent></Card>
+  </div></>;
+}
+
+function ReadingList<T extends { id: number; qualityStatus: string }>({ rows, kind, value, date, saving, archive }: { rows: T[]; kind: 'electricity-meter' | 'water' | 'heat-pump'; value: (row: T) => string; date: (row: T) => string; saving: string | null; archive: (kind: 'electricity-meter' | 'water' | 'heat-pump', id: number) => Promise<void> }) { return <div className="reading-history"><p>Historie</p>{rows.length === 0 ? <small>Zatím bez nového odečtu.</small> : rows.slice().reverse().map((row) => <div className="history-row" key={row.id}><span><strong>{dateLabel(date(row))}</strong><small>{value(row)} · {row.qualityStatus}</small></span>{row.qualityStatus === 'platné' && <Button type="button" variant="ghost" size="icon" aria-label="Archivovat odečet" disabled={saving === `${kind}-${row.id}`} onClick={() => { void archive(kind, row.id); }}><Archive /></Button>}</div>)}</div>; }
 
 function ElectricityView({ rows, year }: { rows: ElectricityReading[]; year: string }) {
   const stats = rows.reduce((acc, row) => { const production = row.pvGenerationKwh ?? 0; const used = ownUse(row); acc.production += production; acc.ownUse += used; acc.distributorImport += row.gridImportKwh ?? 0; acc.inverterImport += row.pvPurchaseKwh ?? 0; acc.distributorExport += row.pndExportKwh ?? 0; acc.inverterExport += row.gridExportKwh ?? 0; acc.cost += netCost(row); return acc; }, { production: 0, ownUse: 0, distributorImport: 0, inverterImport: 0, distributorExport: 0, inverterExport: 0, cost: 0 });

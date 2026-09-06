@@ -1,6 +1,6 @@
 import { asc, eq, ne } from 'drizzle-orm';
 import { getDb } from '@/db';
-import { appMetadata, electricityReadings, heatPumpReadings, waterReadings } from '@/db/schema';
+import { appMetadata, electricityIntervalRecords, electricityMeterReadings, electricityReadings, heatPumpMeterReadings, heatPumpReadings, waterMeterReadings, waterReadings } from '@/db/schema';
 import { electricitySeed, heatPumpSeed, waterSeed } from '@/lib/seed-data';
 
 const DATASET_VERSION = '2026-09-05-v2';
@@ -37,10 +37,14 @@ async function ensureImportedDataOnce() {
 export async function getAllData() {
   await ensureImportedData();
   const db = getDb();
-  const [electricity, water, heatPump] = await Promise.all([
+  const [electricity, water, heatPump, electricityMeters, electricityIntervals, waterMeters, heatPumpMeters] = await Promise.all([
     db.select().from(electricityReadings).orderBy(asc(electricityReadings.period)),
     db.select().from(waterReadings).orderBy(asc(waterReadings.measuredAt)),
     db.select().from(heatPumpReadings).orderBy(asc(heatPumpReadings.period)),
+    db.select().from(electricityMeterReadings).orderBy(asc(electricityMeterReadings.readingDate)),
+    db.select().from(electricityIntervalRecords).orderBy(asc(electricityIntervalRecords.intervalStart)),
+    db.select().from(waterMeterReadings).orderBy(asc(waterMeterReadings.measuredAt)),
+    db.select().from(heatPumpMeterReadings).orderBy(asc(heatPumpMeterReadings.measuredAt)),
   ]);
-  return { electricity, water, heatPump };
+  return { electricity, water, heatPump, electricityMeters, electricityIntervals, waterMeters, heatPumpMeters };
 }
