@@ -5,6 +5,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import * as schema from './schema';
 
 let sqlite: Database.Database | undefined;
+let writeQueue: Promise<void> = Promise.resolve();
 
 function getSqlite() {
   if (sqlite) return sqlite;
@@ -19,4 +20,12 @@ function getSqlite() {
 
 export function getDb() {
   return drizzle(getSqlite(), { schema });
+}
+
+// A collector write spans several statements and must not race the initial
+// workbook seed after a container restart.
+export function serializeWrite<T>(operation: () => Promise<T>) {
+  const task = writeQueue.then(operation, operation);
+  writeQueue = task.then(() => undefined, () => undefined);
+  return task;
 }
