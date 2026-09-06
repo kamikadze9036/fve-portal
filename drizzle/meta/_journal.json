@@ -15,6 +15,13 @@
       "when": 1788636905695,
       "tag": "0001_silent_fabian_cortez",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1788720000000,
+      "tag": "0002_measurement_workflow",
+      "breakpoints": true
     }
   ]
 }

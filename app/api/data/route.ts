@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { getDb } from '@/db';
 import { electricityReadings } from '@/db/schema';
 import { getAllData } from '@/lib/data';
+import { lastDayOfMonth, upsertIntervalRecord } from '@/lib/interval-records';
 
 const numericKeys = [
   'meterNtKwh', 'meterVtKwh', 'pndExportKwh', 'gridImportKwh', 'pvGenerationKwh',
@@ -35,7 +36,21 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: `Pole ${key} musí být nezáporné číslo.` }, { status: 400 });
       } else values[key] = value;
     }
-    const [created] = await getDb().insert(electricityReadings).values(values as typeof electricityReadings.$inferInsert).returning();
+    const intervalFields = {
+      pndImportKwh: values.gridImportKwh as number | null,
+      pndExportKwh: values.pndExportKwh as number | null,
+      inverterImportKwh: values.pvPurchaseKwh as number | null,
+      inverterExportKwh: values.gridExportKwh as number | null,
+      pvGenerationKwh: values.pvGenerationKwh as number | null,
+      pvSelfUseReportedKwh: values.pvSelfUseReportedKwh as number | null,
+      purchaseCostCzk: values.purchaseCostCzk as number | null,
+      saleRevenueCzk: values.saleRevenueCzk as number | null,
+      gridBalancingCzk: values.flexibilityRevenueCzk as number | null,
+    };
+    await upsertIntervalRecord({ intervalStart: input.period, intervalEnd: lastDayOfMonth(input.period), source: 'DeltaGreen', sourceSheet: 'fve-collector / ruční zápis', fields: intervalFields });
+    // Keep the legacy table current until the dashboard is switched to the new API shape.
+    const [created] = await getDb().insert(electricityReadings).values(values as typeof electricityReadings.$inferInsert)
+      .onConflictDoUpdate({ target: electricityReadings.period, set: values as typeof electricityReadings.$inferInsert }).returning();
     return NextResponse.json(created, { status: 201 });
   } catch (error) {
     const message = error instanceof Error && error.message.includes('UNIQUE')
