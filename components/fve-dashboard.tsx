@@ -9,6 +9,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { consumptionByInverter, consumptionByPnd, exportDelta, importDelta } from '@/lib/electricity-calc';
+import { annualSavings, effectivePriceCzkPerKwh, grossPriceCzkPerKwh, netCostCzk, simplePaybackYears } from '@/lib/economics-calc';
 
 type ElectricityReading = {
   id: number; period: string; meterNtKwh: number | null; meterVtKwh: number | null;
@@ -22,8 +24,11 @@ type HeatPumpReading = { id: number; period: string; heatOutputKwh: number | nul
 type MeterReading = { id: number; readingDate: string; meterNtKwh: number; meterVtKwh: number; note: string | null; qualityStatus: string };
 type RawWaterReading = { id: number; measuredAt: string; mainMeterM3: number; gardenMeterM3: number; note: string | null; qualityStatus: string };
 type RawHeatReading = { id: number; measuredAt: string; heatOutputKwh: number | null; hotWaterOutputKwh: number | null; heatInputKwh: number | null; hotWaterInputKwh: number | null; note: string | null; qualityStatus: string };
-export type DashboardData = { electricity: ElectricityReading[]; water: WaterReading[]; heatPump: HeatPumpReading[]; electricityMeters?: MeterReading[]; waterMeters?: RawWaterReading[]; heatPumpMeters?: RawHeatReading[] };
-type Section = 'electricity' | 'water' | 'heat' | 'readings';
+type IntervalRecord = { id: number; intervalStart: string; intervalEnd: string; pndImportKwh: number | null; pndExportKwh: number | null; inverterImportKwh: number | null; inverterExportKwh: number | null; pvGenerationKwh: number | null; houseConsumptionKwh: number | null; pvSelfUseReportedKwh: number | null; purchaseCostCzk: number | null; saleRevenueCzk: number | null; gridBalancingCzk: number | null; qualityNote: string | null };
+type FieldSource = { recordId: number; fieldName: string; source: string };
+type EconomicsSetting = { id: number; effectiveFrom: string; referencePriceCzkPerKwh: number; investmentCzk: number; subsidyCzk: number; note: string | null };
+export type DashboardData = { electricity: ElectricityReading[]; water: WaterReading[]; heatPump: HeatPumpReading[]; electricityMeters?: MeterReading[]; waterMeters?: RawWaterReading[]; heatPumpMeters?: RawHeatReading[]; electricityIntervals?: IntervalRecord[]; fieldSources?: FieldSource[]; economicsSettings?: EconomicsSetting[] };
+type Section = 'electricity' | 'water' | 'heat' | 'readings' | 'economics';
 
 const number = new Intl.NumberFormat('cs-CZ', { maximumFractionDigits: 0 });
 const decimal = new Intl.NumberFormat('cs-CZ', { maximumFractionDigits: 1 });
@@ -134,14 +139,16 @@ export function FveDashboard({ initialData }: { initialData: DashboardData }) {
           <NavButton active={section === 'water'} onClick={() => setSection('water')} icon={<Droplets />}>Voda</NavButton>
           <NavButton active={section === 'heat'} onClick={() => setSection('heat')} icon={<BatteryCharging />}>Tepelné čerpadlo</NavButton>
           <NavButton active={section === 'readings'} onClick={() => setSection('readings')} icon={<Plus />}>Odečty</NavButton>
+          <NavButton active={section === 'economics'} onClick={() => setSection('economics')} icon={<CircleDollarSign />}>Roční ekonomika</NavButton>
           <div className="sidebar-note"><span>Datový model</span><strong>{data.electricity.length + data.water.length + data.heatPump.length} záznamů</strong><small>Elektřina, voda a tepelné čerpadlo v jedné databázi</small></div>
         </aside>
         <section className="workspace">
           {message && <div className="message" role="status">{message}</div>}
-          {section === 'electricity' && <ElectricityView rows={data.electricity.filter((row) => row.period.startsWith(year))} year={year} />}
+          {section === 'electricity' && <ElectricityView rows={data.electricity.filter((row) => row.period.startsWith(year))} intervals={(data.electricityIntervals ?? []).filter((row) => row.intervalStart.startsWith(year))} fieldSources={data.fieldSources ?? []} year={year} />}
           {section === 'water' && <WaterView rows={data.water} />}
           {section === 'heat' && <HeatView rows={data.heatPump.filter((row) => row.period.startsWith(year))} year={year} />}
           {section === 'readings' && <ReadingsView data={data} refresh={refresh} onMessage={setMessage} />}
+          {section === 'economics' && <EconomicsView intervals={(data.electricityIntervals ?? []).filter((row) => row.intervalStart.startsWith(year))} settings={data.economicsSettings ?? []} year={year} refresh={refresh} onMessage={setMessage} />}
         </section>
       </div>
     </main>
@@ -169,7 +176,23 @@ function ReadingsView({ data, refresh, onMessage }: { data: DashboardData; refre
 
 function ReadingList<T extends { id: number; qualityStatus: string }>({ rows, kind, value, date, saving, archive }: { rows: T[]; kind: 'electricity-meter' | 'water' | 'heat-pump'; value: (row: T) => string; date: (row: T) => string; saving: string | null; archive: (kind: 'electricity-meter' | 'water' | 'heat-pump', id: number) => Promise<void> }) { return <div className="reading-history"><p>Historie</p>{rows.length === 0 ? <small>Zatím bez nového odečtu.</small> : rows.slice().reverse().map((row) => <div className="history-row" key={row.id}><span><strong>{dateLabel(date(row))}</strong><small>{value(row)} · {row.qualityStatus}</small></span>{row.qualityStatus === 'platné' && <Button type="button" variant="ghost" size="icon" aria-label="Archivovat odečet" disabled={saving === `${kind}-${row.id}`} onClick={() => { void archive(kind, row.id); }}><Archive /></Button>}</div>)}</div>; }
 
-function ElectricityView({ rows, year }: { rows: ElectricityReading[]; year: string }) {
+function EconomicsView({ intervals, settings, year, refresh, onMessage }: { intervals: IntervalRecord[]; settings: EconomicsSetting[]; year: string; refresh: () => Promise<void>; onMessage: (message: string) => void }) {
+  const active = settings.filter((row) => row.effectiveFrom <= `${year}-12-31`).at(-1);
+  const [form, setForm] = useState({ effectiveFrom: `${year}-01-01`, referencePriceCzkPerKwh: active?.referencePriceCzkPerKwh?.toString() ?? '', investmentCzk: active?.investmentCzk?.toString() ?? '', subsidyCzk: active?.subsidyCzk?.toString() ?? '', note: active?.note ?? '' });
+  const [saving, setSaving] = useState(false);
+  const imported = intervals.reduce((sum, row) => sum + (row.pndImportKwh ?? 0), 0);
+  const purchase = intervals.reduce((sum, row) => sum + (row.purchaseCostCzk ?? 0), 0);
+  const net = intervals.reduce((sum, row) => sum + netCostCzk(row.purchaseCostCzk, row.saleRevenueCzk, row.gridBalancingCzk), 0);
+  const consumption = intervals.reduce<number | null>((sum, row) => { const value = consumptionByPnd(row); return value == null ? sum : (sum ?? 0) + value; }, null);
+  const monthsIncluded = intervals.filter((row) => row.pndImportKwh != null && row.purchaseCostCzk != null).length;
+  const gross = grossPriceCzkPerKwh(purchase, imported || null); const effective = effectivePriceCzkPerKwh(net, imported || null);
+  const savings = annualSavings(consumption, active?.referencePriceCzkPerKwh ?? null, net);
+  const payback = active ? simplePaybackYears(active.investmentCzk, active.subsidyCzk, savings) : null;
+  const submit = async (event: FormEvent) => { event.preventDefault(); setSaving(true); try { const payload = { effectiveFrom: form.effectiveFrom, referencePriceCzkPerKwh: Number(form.referencePriceCzkPerKwh), investmentCzk: Number(form.investmentCzk), subsidyCzk: form.subsidyCzk === '' ? 0 : Number(form.subsidyCzk), note: form.note }; const response = await fetch('/api/economics-settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); const result = await response.json() as { error?: string }; if (!response.ok) throw new Error(result.error ?? 'Nastavení se nepodařilo uložit.'); await refresh(); onMessage('Ekonomické předpoklady byly uloženy.'); } catch (error) { onMessage(error instanceof Error ? error.message : 'Nastavení se nepodařilo uložit.'); } finally { setSaving(false); } };
+  return <><div className="section-heading"><div><p className="eyebrow">Roční model</p><h2>Ekonomika FVE {year}</h2></div><p>Výpočty pracují jen s dostupnými intervaly; nechybějící hodnoty nikdy nenahrazují nulou.</p></div><div className="kpi-grid economics-grid"><Kpi icon={<CircleDollarSign />} label="Hrubá cena odběru" value={gross == null ? 'N/A' : `${decimal.format(gross)} Kč/kWh`} detail="náklad na nákup ÷ odběr PND" accent="blue" /><Kpi icon={<CircleDollarSign />} label="Efektivní cena" value={effective == null ? 'N/A' : `${decimal.format(effective)} Kč/kWh`} detail="čisté náklady ÷ odběr PND" accent="mint" /><Kpi icon={<Sun />} label="Roční úspora" value={savings == null ? 'N/A' : money.format(savings)} detail={active ? `při ${decimal.format(active.referencePriceCzkPerKwh)} Kč/kWh` : 'doplňte referenční cenu'} accent="sun" /><Kpi icon={<TrendingDown />} label="Prostá návratnost" value={payback == null ? 'N/A' : `${decimal.format(payback)} roku`} detail="(investice − dotace) ÷ úspora" accent="navy" /></div><div className="economics-layout"><Card className="table-card economics-card"><CardHeader><CardTitle>Podklady výpočtu</CardTitle></CardHeader><CardContent><div className="formula-list"><p><span>Zahrnuté měsíce</span><strong>{monthsIncluded} / 12</strong></p><p><span>Odběr PND</span><strong>{formatKwh(imported || null)}</strong></p><p><span>Spotřeba podle PND</span><strong>{formatKwh(consumption)}</strong></p><p><span>Čisté náklady</span><strong>{money.format(net)}</strong></p></div>{monthsIncluded < 12 && <p className="quality-note"><AlertTriangle /> Roční výsledek je neúplný; zahrnuje jen dostupná období.</p>}</CardContent></Card><Card className="table-card economics-card"><CardHeader><CardTitle>Předpoklady modelu</CardTitle></CardHeader><CardContent><form className="economics-form" onSubmit={submit}><FormField label="Platné od" name="effectiveFrom" type="date" value={form.effectiveFrom} onChange={(value) => setForm({ ...form, effectiveFrom: value })} required /><FormField label="Referenční cena (Kč/kWh)" name="referencePrice" value={form.referencePriceCzkPerKwh} onChange={(value) => setForm({ ...form, referencePriceCzkPerKwh: value })} required /><FormField label="Investice (Kč)" name="investment" value={form.investmentCzk} onChange={(value) => setForm({ ...form, investmentCzk: value })} required /><FormField label="Dotace (Kč)" name="subsidy" value={form.subsidyCzk} onChange={(value) => setForm({ ...form, subsidyCzk: value })} /><FormField label="Poznámka" name="economicsNote" type="text" value={form.note} onChange={(value) => setForm({ ...form, note: value })} /><Button type="submit" disabled={saving}>{saving ? 'Ukládám…' : 'Uložit předpoklady'}</Button></form></CardContent></Card></div></>;
+}
+
+function ElectricityView({ rows, intervals, fieldSources, year }: { rows: ElectricityReading[]; intervals: IntervalRecord[]; fieldSources: FieldSource[]; year: string }) {
   const stats = rows.reduce((acc, row) => { const production = row.pvGenerationKwh ?? 0; const used = ownUse(row); acc.production += production; acc.ownUse += used; acc.distributorImport += row.gridImportKwh ?? 0; acc.inverterImport += row.pvPurchaseKwh ?? 0; acc.distributorExport += row.pndExportKwh ?? 0; acc.inverterExport += row.gridExportKwh ?? 0; acc.cost += netCost(row); return acc; }, { production: 0, ownUse: 0, distributorImport: 0, inverterImport: 0, distributorExport: 0, inverterExport: 0, cost: 0 });
   const exportComparison = compareSources(rows, (row) => row.pndExportKwh, (row) => row.gridExportKwh);
   const importComparison = compareSources(rows, (row) => row.gridImportKwh, (row) => row.pvPurchaseKwh);
@@ -193,7 +216,14 @@ function ElectricityView({ rows, year }: { rows: ElectricityReading[]; year: str
       </CardContent></Card>
     </div>
     <Card className="table-card"><CardHeader><CardTitle>Porovnání po měsících</CardTitle><span>{rows.length} období</span></CardHeader><CardContent><Table><TableHeader><TableRow><TableHead>Měsíc</TableHead><TableHead className="num">Výroba</TableHead><TableHead className="num">Dodávka PND / SEMS</TableHead><TableHead className="num">Δ dodávky</TableHead><TableHead className="num">Nákup PND / SEMS</TableHead><TableHead className="num">Δ nákupu</TableHead><TableHead className="num">Spotřeba PND / SEMS</TableHead></TableRow></TableHeader><TableBody>{rows.map((row) => <TableRow key={row.id}><TableCell className="month-cell">{monthLabel(row.period)} {year}</TableCell><TableCell className="num">{formatKwh(row.pvGenerationKwh)}</TableCell><TableCell className="num">{formatPair(row.pndExportKwh, row.gridExportKwh)}</TableCell><TableCell className="num">{formatDelta(row.pndExportKwh, row.gridExportKwh)}</TableCell><TableCell className="num">{formatPair(row.gridImportKwh, row.pvPurchaseKwh)}</TableCell><TableCell className="num">{formatDelta(row.gridImportKwh, row.pvPurchaseKwh)}</TableCell><TableCell className="num strong">{formatPair(distributorConsumption(row), inverterConsumption(row))}</TableCell></TableRow>)}</TableBody></Table></CardContent></Card>
+    <IntervalOverview rows={intervals} fieldSources={fieldSources} year={year} />
   </>;
+}
+
+function IntervalOverview({ rows, fieldSources, year }: { rows: IntervalRecord[]; fieldSources: FieldSource[]; year: string }) {
+  if (!rows.length) return <Card className="table-card"><CardHeader><CardTitle>Nový model intervalů</CardTitle></CardHeader><CardContent><p className="empty-copy">Intervalová data se zobrazí po jednorázovém spuštění migrace historie. Nové údaje z Collectoru se ukládají průběžně.</p></CardContent></Card>;
+  const sourceFor = (recordId: number, fieldName: string) => fieldSources.find((row) => row.recordId === recordId && row.fieldName === fieldName)?.source ?? 'neuvedený zdroj';
+  return <Card className="table-card"><CardHeader><CardTitle>Kontrola zdrojů a dopočtů</CardTitle><span>{rows.length} intervalů</span></CardHeader><CardContent><Table><TableHeader><TableRow><TableHead>Interval</TableHead><TableHead className="num">Spotřeba PND / měnič</TableHead><TableHead className="num">Δ odběru</TableHead><TableHead className="num">Δ dodávky</TableHead><TableHead>Zdroj odběru / výroby</TableHead></TableRow></TableHeader><TableBody>{rows.map((row) => <TableRow key={row.id}><TableCell className="month-cell">{dateLabel(row.intervalStart)} – {dateLabel(row.intervalEnd)}</TableCell><TableCell className="num strong">{formatPair(consumptionByPnd(row), consumptionByInverter(row))}</TableCell><TableCell className="num">{formatKwh(importDelta(row))}</TableCell><TableCell className="num">{formatKwh(exportDelta(row))}</TableCell><TableCell className="source-cell">{sourceFor(row.id, 'pndImportKwh')} / {sourceFor(row.id, 'pvGenerationKwh')}</TableCell></TableRow>)}</TableBody></Table></CardContent></Card>;
 }
 
 type ComparisonResult = { distributor: number; inverter: number; difference: number; differencePercent: number | null; matchingMonths: number };
