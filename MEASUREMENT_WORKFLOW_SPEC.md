@@ -43,8 +43,8 @@ historických dat.
 
 | Oblast | Primární zdroj | Kontrolní / doplňkový zdroj | Poznámka |
 |---|---|---|---|
-| Odběr ze sítě | PND: kumulativní stavy NT a VT | DeltaGreen | Odběr intervalu je rozdíl `(NT + VT)` mezi dvěma odečty. |
-| Dodávka do sítě | PND | DeltaGreen | DeltaGreen je obchodník; jeho hodnotu je potřeba uchovat samostatně, i když přebírá data distributora. |
+| Odběr ze sítě | DeltaGreen (`/consumption` → Spotřeba) | PND/DIP: kumulativní stavy NT a VT (ruční odečet) | Automatický sběr (`fve-collector`) používá **jen DeltaGreen** — viz rozhodnutí v sekci 11. PND/DIP zůstává jako volitelný ruční zdroj, pokud uživatel sám odečte fyzický elektroměr. |
+| Dodávka do sítě | DeltaGreen (`/production` → Výroba) | PND (ruční odečet) | DeltaGreen je obchodník, ale přebírá stejná data od distributora jako PND — ověřeno živě (čísla se shodují), proto se automaticky netahá PND vůbec. |
 | Výroba FVE | Home Assistant / InfluxDB / měnič | — | Intervalová hodnota měniče. |
 | Import a export měniče | Home Assistant / InfluxDB / měnič | PND / DeltaGreen | Slouží k porovnání přesnosti s distribučním měřením. |
 | Spotřeba domu | Home Assistant / InfluxDB / měnič | dopočet | Jde o celkovou spotřebu procházející měničem. |
@@ -271,6 +271,28 @@ etapa:
 Automatický import nesmí přepsat ručně potvrzený záznam. Musí vytvořit návrh
 změn k potvrzení a auditní záznam.
 
+### 8.1 Existující automatický collector (`fve-collector/`)
+
+Mimo tento repozitář (`fve-collector/collector/`, Python) už běží jednou
+měsíčně automatický sběr, který POSTuje data na dnešní `/api/data`:
+
+- `deltagreen.py` — Spotřeba a Výroba (kWh) + finance z DeltaGreen
+  (`/consumption`, `/production`), viz sekce 3 a 11;
+- `influx_ha.py` — výroba FVE, import/export měniče z InfluxDB;
+- žádný PND scraper — byl zvažován a zavržen (viz sekce 11).
+
+**Tahle implementace musí buď:**
+
+1. zachovat aktuální tvar `POST /api/data` (jeden plochý JSON objekt s
+   `period` + číselnými poli) jako kompatibilní zápisový mód pro tenhle
+   collector, i po zavedení nových tabulek pro surové odečty/intervaly; nebo
+2. pokud se kontrakt změní, `fve-collector` je potřeba upravit současně —
+   nasazovat nový datový model appky a starý collector odděleně by znamenalo,
+   že měsíční automatický sběr přestane fungovat beze zjevné chyby.
+
+Collector v tuhle chvíli neposílá `meterNtKwh`/`meterVtKwh` (posílá `null`) —
+tahle pole jsou v novém modelu čistě pro ruční PND odečty.
+
 ## 9. Ověření hotového řešení
 
 Implementace je hotová, až když platí všechny body:
@@ -297,18 +319,37 @@ Implementace je hotová, až když platí všechny body:
 4. Elektřina: PND NT/VT, zdroje, srovnání a korekce záznamů.
 5. Finanční roční panel a nastavení modelu návratnosti.
 6. CSV/XLSX import.
-7. Volitelné integrace HA/InfluxDB, DeltaGreen a PND.
+7. Sladit `POST /api/data` s existujícím `fve-collector` (sekce 8.1) —
+   automatické integrace HA/InfluxDB a DeltaGreen už běží, PND/DIP zůstává
+   jen jako ruční doplněk (viz sekce 11).
 8. Regresní testy, ověření na záloze produkčních dat a teprve pak nasazení na
    Synology.
 
-## 11. Rozhodnutí před implementací
+## 11. Rozhodnutí — odsouhlaseno
 
-Tento návrh počítá s tím, že PND je primární technický zdroj pro import a
-export sítě a DeltaGreen je obchodní/fakturační kopie pro kontrolu. Pokud má
-být DeltaGreen u některého období primárním zdrojem (například protože PND
-export není dostupný), bude to explicitní volba příslušného záznamu, nikoli
-tiché přepsání hodnoty.
+**PND vs. DeltaGreen jako primární zdroj (vyřešeno):** Původní návrh počítal
+s PND jako primárním technickým zdrojem a DeltaGreen jako kontrolní kopií.
+Po ověření živě proti oběma portálům (`pnd.cezdistribuce.cz` — nová verze
+`cezpnd2`, přihlášení přes ČEZ MEPAS OAuth2/CAS; a `dip.cezdistribuce.cz`)
+platí opak:
 
-Referenční cena, investice a dotace pro návratnost budou nastavení po rocích
-nebo platná od zvoleného data. Výchozí historická hodnota 5,50 Kč/kWh a čistá
-investice 230 000 Kč se přenesou pouze jako editovatelné předvyplnění.
+- DeltaGreen je obchodník, ale přebírá **stejná** data od distributora — čísla
+  z jeho `/production` (Výroba, tj. dodávka do sítě) se shodovala s tím, co
+  ukazuje PND;
+- PND má navíc mnohem složitější UI na automatizaci (interaktivní přepínání
+  granularity/roku, žádné jednoduché API);
+- DIP (`dip.cezdistribuce.cz/irj/portal/prehled-om/`) je jednodušší statická
+  stránka s poli „Poslední stav elektroměru (NT)“/„(VT)“ — použitelná pro
+  **ruční** kontrolu fyzického elektroměru, ale netahá se automaticky.
+
+**Výsledek:** automatický sběr (`fve-collector`) používá výhradně DeltaGreen
+(+ InfluxDB pro výrobu/měnič). PND se nescrapuje vůbec. DIP i PND zůstávají
+jako volitelný **ruční** zdroj pro `meterNtKwh`/`meterVtKwh`, pokud si uživatel
+sám chce dohledat/zapsat fyzický stav elektroměru — netýká se automatizace.
+Sekce 3 tabulka výše je podle toho aktualizovaná.
+
+**Verzování referenční ceny/investice/dotace pro návratnost (vyřešeno):**
+hodnota platná „od zvoleného data“ (ne pevně podle kalendářního roku) — jde
+změnit kdykoliv během roku, např. při zdražení elektřiny v půlce roku.
+Výchozí historická hodnota 5,50 Kč/kWh a čistá investice 230 000 Kč se
+přenesou jako editovatelné předvyplnění platné od nejstaršího dostupného data.
