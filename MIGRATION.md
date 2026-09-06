@@ -106,7 +106,21 @@ přímo použitelné i po výměně adaptéru.
 
 - **`docker-entrypoint.sh`** — smazat, nahradit migrací spuštěnou přímo z aplikace (viz výše) nebo jednoduchým shell wrapperem `migrate && node server.js`.
 
-- **`compose.yaml`** — zjednodušit healthcheck/env (odpadá `WRANGLER_WRITE_LOGS`), port a volume `/data` zůstávají.
+- **`compose.yaml`** — zjednodušit healthcheck/env (odpadá `WRANGLER_WRITE_LOGS`). Zároveň při téhle migraci **přejít z pojmenovaného Docker volume na bind mount**:
+  ```yaml
+  volumes:
+    - ./data:/data   # místo `fve-data:/data` + `volumes: { fve-data: ... }`
+  ```
+  Důvod: pojmenovaný volume leží schovaný uvnitř Dockerovy interní storage
+  (na NASu jsme se k souboru museli dostat přes pomocný `alpine` kontejner).
+  Bind mount na `/volume1/docker/fve-portal/data` (tj. `./data` relativně ke
+  `compose.yaml`) je normální viditelná složka ve File Station, jde ji
+  zálohovat přes Synology Hyper Backup / Snapshot Replication a SQLite
+  soubor jde kdykoliv přímo zkopírovat/prohlédnout. Jediné riziko je
+  UID/GID nesoulad mezi kontejnerem a hostitelským FS — ověřit, že proces
+  v kontejneru (uid, pod kterým běží `node server.js`) má zapisovací práva
+  do namountované složky; případně nastavit `user:` v compose nebo `chmod`
+  složku na NASu předem.
 
 - **`.openai/hosting.json`** — ponechat nebo smazat dle uvážení; s odstraněním `@openai/sites-vite-plugin` přestává mít efekt, ale `modelContext.registerTool` volání v `fve-dashboard.tsx` je nezávislé feature-detection a funguje i bez něj.
 
@@ -115,18 +129,49 @@ přímo použitelné i po výměně adaptéru.
 ## Migrace existujících dat
 
 Aktuální produkční data na NASu (Docker volume `fve-portal-data`) jsou uložená
-jako pravý SQLite soubor Miniflare D1 emulace:
+jako pravý SQLite soubor Miniflare D1 emulace, **ve WAL módu**:
 ```
-/data/v3/d1/miniflare-D1DatabaseObject/<hash>.sqlite
+/data/v3/d1/miniflare-D1DatabaseObject/<hash>.sqlite  (+ -wal, -shm)
 ```
 Ověřeno na běžícím nasazení (`docker run --rm -v fve-portal-data:/data alpine find /data -type f`).
-Protože databáze používala WAL a její migrace jsou evidované ve Wrangleru, nelze
-soubor jen zkopírovat a následně bez přípravy spustit Drizzle migrace: hrozila
-by nekonzistentní kopie nebo chyba na již existujících tabulkách. Zatím jsou v
-databázi jen seedovaná data z Excelu (žádné ruční záznamy přes formulář), proto
-je doporučený cutover čistá `/data/fve.db` a ponechání starého volume pro
-rollback. Případný budoucí import historických ručních dat musí nejdříve vytvořit
-konzistentní SQLite snapshot a Drizzle baseline.
+Dvě věci, které dělají "prosté zkopírování souboru" nebezpečným, a proč se
+importu starých dat vyhýbáme při prvním nasazení:
+
+1. **WAL nekonzistence.** Ve WAL módu nejsou nezapsané změny v hlavním
+   `.sqlite` souboru, ale v `-wal`. Kopírovat za běhu kontejneru jen
+   `*.sqlite` bez `-wal`/`-shm` (nebo bez konzistentního snapshotu) může
+   vynechat poslední zápisy. Pokud se k importu starých dat někdy přistoupí,
+   dělat ho jen přes `sqlite3 <soubor>.sqlite ".backup /cesta/snapshot.db"`
+   (bezpečné i za běhu, řeší WAL správně) nebo kontejner napřed zastavit.
+
+2. **Chybějící historie Drizzle migrací.** Stará databáze má tabulky už
+   vytvořené (přes wrangler/D1 mechanismus), ale ne tabulku, kterou si vede
+   `drizzle-kit`/`drizzle-orm` migrator (`__drizzle_migrations` nebo
+   ekvivalent) pro sledování, co už bylo aplikováno. Spuštění migrátoru
+   napřímo na starém souboru by spadlo na `CREATE TABLE ... already exists`
+   u první migrace, protože migrator neví, že tyhle tabulky už existují.
+
+**Proto: první nasazení nové verze NEIMPORTUJE starou databázi.** Protože
+v produkci zatím nejsou žádné ručně vložené odečty (jen seed z Excelu, který
+appka umí sama znovu naimportovat), je bezpečnější nechat novou verzi
+nastartovat s čistou databází a starý volume zatím netýkat:
+
+1. Starý Docker volume (`fve-portal-data`, Miniflare formát) zůstává beze
+   změny jako rollback — nemazat, nepřepisovat.
+2. Nový kontejner (Next.js + `better-sqlite3`) běží s **novým** bind-mount
+   adresářem (`/volume1/docker/fve-portal/data` → `/data/fve.db`), který při
+   prvním startu neexistuje — vytvořit ho na NASu předem (`mkdir -p`) a
+   ověřit zápisová práva pro uid, pod kterým běží kontejner.
+3. Migrátor při startu vytvoří tabulky z `drizzle/*.sql` (jsou to čisté
+   SQLite DDL, funguje to i tady) a založí si vlastní historii migrací;
+   appka si sama doplní seed data z Excelu stejnou logikou jako dnes
+   (`lib/data.ts` → `ensureImportedData()`).
+4. Ověřit dashboard, `/api/data`, a že kontejner přežije restart se stejnými
+   daty (volume perzistuje).
+5. **Teprve až budou v nové verzi existovat reálná ručně vložená data** (ne
+   dřív), řešit případný import starých dat ze staré Miniflare databáze jako
+   samostatný, opatrný krok (se `.backup` snapshotem, ruční deduplikací proti
+   tomu, co už bylo mezitím zadáno ručně).
 
 ## Pořadí kroků
 
@@ -135,5 +180,8 @@ konzistentní SQLite snapshot a Drizzle baseline.
 3. `Dockerfile`, `docker-entrypoint.sh` (smazat/zjednodušit), `compose.yaml`.
 4. `README.md`, `DOCKER.md`.
 5. Lokální ověření: `docker compose up --build`, zkontrolovat `/api/data` a dashboard v prohlížeči, ověřit že `db:generate` pořád funguje.
-6. Zkopírovat/namapovat existující SQLite soubor z NAS volume (viz výše) nebo přijmout čerstvý seed re-import.
-7. Nasazení na Synology stejným flow jako dosud (tar přes SSH + `docker compose up --build -d`, viz `DOCKER.md` a skill `synology-nas`).
+6. Nasazení na Synology s **čistou databází** podle postupu výše (nový
+   bind-mount adresář místo starého named volume, žádný import staré
+   databáze) — tar přes SSH + `docker compose up --build -d`
+   (viz `DOCKER.md` a skill `synology-nas`).
+7. Import starých dat (pokud bude ještě potřeba) až jako pozdější samostatný krok.
