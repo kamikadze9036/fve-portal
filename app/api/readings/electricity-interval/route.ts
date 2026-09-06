@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { serializeWrite } from '@/db';
 import { intervalFields, upsertIntervalRecord } from '@/lib/interval-records';
 
 const isoDate = /^\d{4}-\d{2}-\d{2}$/;
@@ -13,6 +14,6 @@ export async function POST(request: Request) {
       fields[key] = value as number | null;
     }
     if (!Object.keys(fields).length) return NextResponse.json({ error: 'Vyžaduji alespoň jednu hodnotu.' }, { status: 400 });
-    return NextResponse.json(await upsertIntervalRecord({ intervalStart: input.intervalStart, intervalEnd: input.intervalEnd, source: input.source, fields }), { status: 201 });
+    return NextResponse.json(await serializeWrite(() => upsertIntervalRecord({ intervalStart: input.intervalStart!, intervalEnd: input.intervalEnd!, source: input.source!, fields })), { status: 201 });
   } catch { return NextResponse.json({ error: 'Interval se nepodařilo uložit.' }, { status: 400 }); }
 }

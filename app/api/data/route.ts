@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { getDb } from '@/db';
+import { eq } from 'drizzle-orm';
+import { getDb, serializeWrite } from '@/db';
 import { electricityReadings } from '@/db/schema';
 import { getAllData } from '@/lib/data';
 import { lastDayOfMonth, upsertIntervalRecord } from '@/lib/interval-records';
@@ -47,12 +48,18 @@ export async function POST(request: Request) {
       saleRevenueCzk: values.saleRevenueCzk as number | null,
       gridBalancingCzk: values.flexibilityRevenueCzk as number | null,
     };
-    await upsertIntervalRecord({ intervalStart: input.period, intervalEnd: lastDayOfMonth(input.period), source: 'DeltaGreen', sourceSheet: 'fve-collector / ruční zápis', fields: intervalFields });
-    // Keep the legacy table current until the dashboard is switched to the new API shape.
-    const [created] = await getDb().insert(electricityReadings).values(values as typeof electricityReadings.$inferInsert)
-      .onConflictDoUpdate({ target: electricityReadings.period, set: values as typeof electricityReadings.$inferInsert }).returning();
+    const created = await serializeWrite(async () => {
+      await upsertIntervalRecord({ intervalStart: input.period as string, intervalEnd: lastDayOfMonth(input.period as string), source: 'DeltaGreen', sourceSheet: 'fve-collector / ruční zápis', fields: intervalFields });
+      // Keep the legacy table current until the dashboard is switched to the new API shape.
+      const [legacy] = await getDb().insert(electricityReadings).values(values as typeof electricityReadings.$inferInsert)
+        .onConflictDoUpdate({ target: electricityReadings.period, set: values as typeof electricityReadings.$inferInsert }).returning();
+      const [verified] = await getDb().select().from(electricityReadings).where(eq(electricityReadings.period, input.period as string)).limit(1);
+      if (!verified || verified.id !== legacy.id) throw new Error('Zápis se po uložení nepodařilo ověřit.');
+      return legacy;
+    });
     return NextResponse.json(created, { status: 201 });
   } catch (error) {
+    console.error('POST /api/data failed', error);
     const message = error instanceof Error && error.message.includes('UNIQUE')
       ? 'Pro zvolené období už záznam existuje.'
       : 'Záznam se nepodařilo uložit.';

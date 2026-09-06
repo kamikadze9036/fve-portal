@@ -4,6 +4,7 @@ import { appMetadata, electricityReadings, heatPumpReadings, waterReadings } fro
 import { electricitySeed, heatPumpSeed, waterSeed } from '@/lib/seed-data';
 
 const DATASET_VERSION = '2026-09-05-v2';
+let importInFlight: Promise<void> | undefined;
 
 async function insertChunks<T>(items: readonly T[], insert: (chunk: T[]) => Promise<unknown>) {
   for (let index = 0; index < items.length; index += 5) {
@@ -12,6 +13,12 @@ async function insertChunks<T>(items: readonly T[], insert: (chunk: T[]) => Prom
 }
 
 export async function ensureImportedData() {
+  if (importInFlight) return importInFlight;
+  importInFlight = ensureImportedDataOnce().finally(() => { importInFlight = undefined; });
+  return importInFlight;
+}
+
+async function ensureImportedDataOnce() {
   const db = getDb();
   const [version] = await db.select().from(appMetadata).where(eq(appMetadata.key, 'dataset_version')).limit(1);
   if (version?.value === DATASET_VERSION) return;
