@@ -8,7 +8,9 @@ Aplikace je standardní self-hosted **Next.js** aplikace s Drizzle ORM a SQLite.
 - **Next.js 16** s App Routerem a standalone výstupem pro Docker
 - **SQLite** přes `better-sqlite3`; výchozí cesta databáze je `/data/fve.db`
 - **Drizzle ORM** a SQL migrace ve složce `drizzle/`
-- **Docker Compose** s pojmenovaným volume `fve-portal-data`
+- **Docker Compose** s bind-mount složkou `./data` (na Synology
+  `/volume1/docker/fve-portal/data`) místo pojmenovaného Docker volume —
+  viditelné a zálohovatelné přes Synology nástroje
 
 Původní vinext/Cloudflare D1 implementace byla nahrazena běžícím Next.js
 serverem. Aplikace při startu kontejneru aplikuje Drizzle migrace a následně

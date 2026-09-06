@@ -21,6 +21,7 @@ WORKDIR /app
 
 ENV NODE_ENV=production \
     PORT=8787 \
+    HOSTNAME=0.0.0.0 \
     DATABASE_PATH=/data/fve.db
 
 COPY --from=production-dependencies /app/node_modules ./node_modules
