@@ -111,17 +111,48 @@ přímo použitelné i po výměně adaptéru.
 ## Migrace existujících dat
 
 Aktuální produkční data na NASu (Docker volume `fve-portal-data`) jsou uložená
-jako pravý SQLite soubor Miniflare D1 emulace:
+jako pravý SQLite soubor Miniflare D1 emulace, **ve WAL módu**:
 ```
-/data/v3/d1/miniflare-D1DatabaseObject/<hash>.sqlite
+/data/v3/d1/miniflare-D1DatabaseObject/<hash>.sqlite  (+ -wal, -shm)
 ```
 Ověřeno na běžícím nasazení (`docker run --rm -v fve-portal-data:/data alpine find /data -type f`).
-Protože jde o obyčejný SQLite soubor (žádný proprietární formát), stačí ho
-při nasazení nové verze zkopírovat na cestu, kterou čeká nový `better-sqlite3`
-adaptér (`/data/fve.db`), a spustit `drizzle migrate` pro doplnění případných
-nových sloupců. Zatím jsou v databázi jen seedovaná data z Excelu (žádné
-ruční záznamy přes formulář), takže riziko ztráty dat je nízké i bez ruční
-migrace — pro jistotu ale doporučuji soubor před cutoverem zazálohovat.
+
+Dvě věci, které dělají "prosté zkopírování souboru" nebezpečným, a proč se
+importu starých dat vyhýbáme při prvním nasazení:
+
+1. **WAL nekonzistence.** Ve WAL módu nejsou nezapsané změny v hlavním
+   `.sqlite` souboru, ale v `-wal`. Kopírovat za běhu kontejneru jen
+   `*.sqlite` bez `-wal`/`-shm` (nebo bez konzistentního snapshotu) může
+   vynechat poslední zápisy. Pokud se k importu starých dat někdy přistoupí,
+   dělat ho jen přes `sqlite3 <soubor>.sqlite ".backup /cesta/snapshot.db"`
+   (bezpečné i za běhu, řeší WAL správně) nebo kontejner napřed zastavit.
+
+2. **Chybějící historie Drizzle migrací.** Stará databáze má tabulky už
+   vytvořené (přes wrangler/D1 mechanismus), ale ne tabulku, kterou si vede
+   `drizzle-kit`/`drizzle-orm` migrator (`__drizzle_migrations` nebo
+   ekvivalent) pro sledování, co už bylo aplikováno. Spuštění migrátoru
+   napřímo na starém souboru by spadlo na `CREATE TABLE ... already exists`
+   u první migrace, protože migrator neví, že tyhle tabulky už existují.
+
+**Proto: první nasazení nové verze NEIMPORTUJE starou databázi.** Protože
+v produkci zatím nejsou žádné ručně vložené odečty (jen seed z Excelu, který
+appka umí sama znovu naimportovat), je bezpečnější nechat novou verzi
+nastartovat s čistou databází a starý volume zatím netýkat:
+
+1. Starý Docker volume (`fve-portal-data`, Miniflare formát) zůstává beze
+   změny jako rollback — nemazat, nepřepisovat.
+2. Nový kontejner (Next.js + `better-sqlite3`) běží s **novým** volume/cestou
+   (`/data/fve.db`), který při prvním startu neexistuje.
+3. Migrátor při startu vytvoří tabulky z `drizzle/*.sql` (jsou to čisté
+   SQLite DDL, funguje to i tady) a založí si vlastní historii migrací;
+   appka si sama doplní seed data z Excelu stejnou logikou jako dnes
+   (`lib/data.ts` → `ensureImportedData()`).
+4. Ověřit dashboard, `/api/data`, a že kontejner přežije restart se stejnými
+   daty (volume perzistuje).
+5. **Teprve až budou v nové verzi existovat reálná ručně vložená data** (ne
+   dřív), řešit případný import starých dat ze staré Miniflare databáze jako
+   samostatný, opatrný krok (se `.backup` snapshotem, ruční deduplikací proti
+   tomu, co už bylo mezitím zadáno ručně).
 
 ## Pořadí kroků
 
@@ -130,5 +161,7 @@ migrace — pro jistotu ale doporučuji soubor před cutoverem zazálohovat.
 3. `Dockerfile`, `docker-entrypoint.sh` (smazat/zjednodušit), `compose.yaml`.
 4. `README.md`, `DOCKER.md`.
 5. Lokální ověření: `docker compose up --build`, zkontrolovat `/api/data` a dashboard v prohlížeči, ověřit že `db:generate` pořád funguje.
-6. Zkopírovat/namapovat existující SQLite soubor z NAS volume (viz výše) nebo přijmout čerstvý seed re-import.
-7. Nasazení na Synology stejným flow jako dosud (tar přes SSH + `docker compose up --build -d`, viz `DOCKER.md` a skill `synology-nas`).
+6. Nasazení na Synology s **čistou databází** podle postupu výše (nový volume,
+   žádný import staré databáze) — tar přes SSH + `docker compose up --build -d`
+   (viz `DOCKER.md` a skill `synology-nas`).
+7. Import starých dat (pokud bude ještě potřeba) až jako pozdější samostatný krok.
