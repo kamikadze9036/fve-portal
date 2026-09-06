@@ -8,7 +8,7 @@ services:
       - "${FVE_PORT:-8787}:8787"
     environment:
       PORT: 8787
-      WRANGLER_WRITE_LOGS: "false"
+      DATABASE_PATH: /data/fve.db
     volumes:
       - fve-data:/data
     healthcheck:

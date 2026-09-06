@@ -1,6 +1,10 @@
 # Architektura: přechod z vinext/Cloudflare D1 na plain Next.js + SQLite
 
-Návrh (zatím neimplementováno) — cíl je zbavit se závislosti na Cloudflare
+Implementační návrh. Migrace byla realizována ve větvi
+`feature/plain-next-sqlite`; tento dokument zároveň zachovává důvody a
+bezpečnostní omezení pro nasazení.
+
+Cíl je zbavit se závislosti na Cloudflare
 Workers runtime a `wrangler dev` jako "produkčním" serveru, a nahradit ji
 standardním self-hosted Next.js buildem s obyčejným SQLite souborem.
 
@@ -116,12 +120,13 @@ jako pravý SQLite soubor Miniflare D1 emulace:
 /data/v3/d1/miniflare-D1DatabaseObject/<hash>.sqlite
 ```
 Ověřeno na běžícím nasazení (`docker run --rm -v fve-portal-data:/data alpine find /data -type f`).
-Protože jde o obyčejný SQLite soubor (žádný proprietární formát), stačí ho
-při nasazení nové verze zkopírovat na cestu, kterou čeká nový `better-sqlite3`
-adaptér (`/data/fve.db`), a spustit `drizzle migrate` pro doplnění případných
-nových sloupců. Zatím jsou v databázi jen seedovaná data z Excelu (žádné
-ruční záznamy přes formulář), takže riziko ztráty dat je nízké i bez ruční
-migrace — pro jistotu ale doporučuji soubor před cutoverem zazálohovat.
+Protože databáze používala WAL a její migrace jsou evidované ve Wrangleru, nelze
+soubor jen zkopírovat a následně bez přípravy spustit Drizzle migrace: hrozila
+by nekonzistentní kopie nebo chyba na již existujících tabulkách. Zatím jsou v
+databázi jen seedovaná data z Excelu (žádné ruční záznamy přes formulář), proto
+je doporučený cutover čistá `/data/fve.db` a ponechání starého volume pro
+rollback. Případný budoucí import historických ručních dat musí nejdříve vytvořit
+konzistentní SQLite snapshot a Drizzle baseline.
 
 ## Pořadí kroků
 
