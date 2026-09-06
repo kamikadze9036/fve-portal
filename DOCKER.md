@@ -6,17 +6,29 @@
 docker compose up --build -d
 ```
 
-Aplikace bude dostupná na `http://localhost:8787`.
-
-Jiný port lze nastavit při spuštění:
+Aplikace bude dostupná na `http://localhost:8787`. Jiný port lze nastavit při
+spuštění:
 
 ```sh
 FVE_PORT=8080 docker compose up --build -d
 ```
 
-## Data
+## Data a migrace
 
-Databáze je uložená v pojmenovaném Docker volume `fve-portal-data`. Při běžném restartu nebo novém sestavení kontejneru zůstává zachovaná. Při startu se automaticky aplikují nové databázové migrace.
+Databáze je SQLite soubor `/data/fve.db`, namountovaný jako bind mount ze
+složky `./data` vedle `compose.yaml` (na Synology tedy typicky
+`/volume1/docker/fve-portal/data`) — viditelná normální složka, jde ji
+zálohovat přes Synology Hyper Backup / Snapshot Replication. Startovací
+skript před spuštěním Next.js automaticky aplikuje Drizzle migrace. Při
+běžném restartu, aktualizaci image i `docker compose down` data zůstávají
+zachována.
+
+Při přechodu z původní verze s Miniflare **nekopírujte pouze** soubor
+`*.sqlite` za běhu: databáze používala WAL a potřebuje konzistentní snapshot.
+Navíc její migrace nejsou evidované v Drizzle. Pokud nejsou žádné ruční odečty,
+nejbezpečnější je ponechat původní volume jako rollback a nechat tuto verzi
+vytvořit čisté `/data/fve.db` ze seedů. Skript schválně odmítne spustit Drizzle
+migrace na staré databázi bez provedeného baseline importu.
 
 ## Správa
 
@@ -26,4 +38,5 @@ docker compose restart
 docker compose down
 ```
 
-Příkaz `docker compose down` databázi nemaže. Smazala by se až explicitním odstraněním volume.
+Bind mount je perzistence, nikoli záloha. Před větší aktualizací vytvořte
+snapshot nebo zálohu složky `./data` (Hyper Backup / Snapshot Replication).

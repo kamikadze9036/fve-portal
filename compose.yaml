@@ -8,9 +8,9 @@ services:
       - "${FVE_PORT:-8787}:8787"
     environment:
       PORT: 8787
-      WRANGLER_WRITE_LOGS: "false"
+      DATABASE_PATH: /data/fve.db
     volumes:
-      - fve-data:/data
+      - ./data:/data
     healthcheck:
       test:
         - CMD
@@ -22,7 +22,3 @@ services:
       retries: 5
       start_period: 20s
     restart: unless-stopped
-
-volumes:
-  fve-data:
-    name: fve-portal-data

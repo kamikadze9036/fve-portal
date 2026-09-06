@@ -1,6 +1,10 @@
 # Architektura: přechod z vinext/Cloudflare D1 na plain Next.js + SQLite
 
-Návrh (zatím neimplementováno) — cíl je zbavit se závislosti na Cloudflare
+Implementační návrh. Migrace byla realizována ve větvi
+`feature/plain-next-sqlite`; tento dokument zároveň zachovává důvody a
+bezpečnostní omezení pro nasazení.
+
+Cíl je zbavit se závislosti na Cloudflare
 Workers runtime a `wrangler dev` jako "produkčním" serveru, a nahradit ji
 standardním self-hosted Next.js buildem s obyčejným SQLite souborem.
 
@@ -130,7 +134,6 @@ jako pravý SQLite soubor Miniflare D1 emulace, **ve WAL módu**:
 /data/v3/d1/miniflare-D1DatabaseObject/<hash>.sqlite  (+ -wal, -shm)
 ```
 Ověřeno na běžícím nasazení (`docker run --rm -v fve-portal-data:/data alpine find /data -type f`).
-
 Dvě věci, které dělají "prosté zkopírování souboru" nebezpečným, a proč se
 importu starých dat vyhýbáme při prvním nasazení:
 

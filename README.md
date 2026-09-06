@@ -1,33 +1,21 @@
 # FVE Portal
 
-Dashboard spotřeb domu (Zruč) — elektřina/FVE, voda, tepelné čerpadlo. Next.js
-(`vinext`) aplikace s Drizzle ORM nad Cloudflare D1 (SQLite).
+Dashboard spotřeb domu ve Zruči: elektřina a FVE, voda a tepelné čerpadlo.
+Aplikace je standardní self-hosted **Next.js** aplikace s Drizzle ORM a SQLite.
 
-## Původ a self-hosting na Synology NAS
+## Architektura
 
-Základ appky (Next.js/vinext frontend, shadcn/ui komponenty, Drizzle schéma,
-`/api/data` endpoint, dashboard) byl vygenerovaný přes **OpenAI ChatGPT Apps SDK
-/ "Sites"** nástroj — proto `.openai/hosting.json`, `@openai/sites-vite-plugin`
-v `package.json` a integrace `modelContext.registerTool` v
-`components/fve-dashboard.tsx` (appka se umí zaregistrovat jako nástroj přímo
-v ChatGPT). Původně byla appka cílená na hosting přímo přes OpenAI/Cloudflare
-Workers + D1.
+- **Next.js 16** s App Routerem a standalone výstupem pro Docker
+- **SQLite** přes `better-sqlite3`; výchozí cesta databáze je `/data/fve.db`
+- **Drizzle ORM** a SQL migrace ve složce `drizzle/`
+- **Docker Compose** s bind-mount složkou `./data` (na Synology
+  `/volume1/docker/fve-portal/data`) místo pojmenovaného Docker volume —
+  viditelné a zálohovatelné přes Synology nástroje
 
-Pro provoz na vlastním Synology NASu (mimo Cloudflare/OpenAI infrastrukturu)
-byl přidán **Docker self-hosting**:
-
-- `Dockerfile` — multi-stage build (`npm run build` → runtime image s Node 22)
-- `docker-entrypoint.sh` — při startu kontejneru aplikuje D1 migrace lokálně
-  (`wrangler d1 migrations apply --local --persist-to /data`) a pak spustí
-  `wrangler dev` jako lokální server na `0.0.0.0:8787`
-- `compose.yaml` — jedna služba, pojmenovaný volume `fve-portal-data` pro
-  perzistenci SQLite souboru mezi restarty/rebuildy, healthcheck na `/api/data`
-- `DOCKER.md` — provozní návod (spuštění, správa, poznámky k datům)
-
-Zbytek appky (schéma, API, UI, seed data) je beze změny — D1 binding se jen
-lokálně emuluje přes `wrangler --persist-to`, místo skutečného Cloudflare D1.
-
-Nasazeno na Synology DSM (Container Manager / `docker compose`), viz `DOCKER.md`.
+Původní vinext/Cloudflare D1 implementace byla nahrazena běžícím Next.js
+serverem. Aplikace při startu kontejneru aplikuje Drizzle migrace a následně
+spustí `node server.js`; pro provoz není potřeba Cloudflare účet, Wrangler ani
+emulace Miniflare.
 
 ## Vývoj
 
@@ -39,5 +27,10 @@ npm run dev
 ## Databáze
 
 ```sh
-npm run db:generate   # vygeneruje novou Drizzle migraci po změně db/schema.ts
+npm run db:generate  # vytvoří novou SQL migraci po změně db/schema.ts
+npm run db:migrate   # aplikuje migrace do DATABASE_PATH nebo /data/fve.db
 ```
+
+Při prvním požadavku aplikace naplní čistou databázi importovanými daty ze
+zdrojového sešitu. Další informace k Dockeru a bezpečnému přechodu z původního
+volume jsou v [DOCKER.md](DOCKER.md) a [MIGRATION.md](MIGRATION.md).
