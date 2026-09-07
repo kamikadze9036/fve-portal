@@ -50,7 +50,10 @@ const initialForm = { period: '2026-09', meterNtKwh: '', meterVtKwh: '', pndExpo
 export function FveDashboard({ initialData }: { initialData: DashboardData }) {
   const [data, setData] = useState(initialData);
   const [section, setSection] = useState<Section>('electricity');
-  const [year, setYear] = useState('2025');
+  const [year, setYear] = useState(() => {
+    const years = Array.from(new Set(initialData.electricity.map((row) => row.period.slice(0, 4)))).sort();
+    return years.at(-1) ?? new Date().getFullYear().toString();
+  });
   const [dialogOpen, setDialogOpen] = useState(false);
   const [form, setForm] = useState(initialForm);
   const [message, setMessage] = useState<string | null>(null);
@@ -202,7 +205,7 @@ function CumulativeSavingsCard({ savings }: { savings: ReturnType<typeof cumulat
 }
 
 function ElectricityView({ rows, intervals, fieldSources, year }: { rows: ElectricityReading[]; intervals: IntervalRecord[]; fieldSources: FieldSource[]; year: string }) {
-  const stats = rows.reduce((acc, row) => { const production = row.pvGenerationKwh ?? 0; const used = ownUse(row); acc.production += production; acc.ownUse += used; acc.distributorImport += row.gridImportKwh ?? 0; acc.inverterImport += row.pvPurchaseKwh ?? 0; acc.distributorExport += row.pndExportKwh ?? 0; acc.inverterExport += row.gridExportKwh ?? 0; acc.cost += netCost(row); return acc; }, { production: 0, ownUse: 0, distributorImport: 0, inverterImport: 0, distributorExport: 0, inverterExport: 0, cost: 0 });
+  const stats = rows.reduce((acc, row) => { const production = row.pvGenerationKwh ?? 0; const used = ownUse(row); const consumption = distributorConsumption(row) ?? inverterConsumption(row); acc.production += production; acc.ownUse += used; acc.distributorImport += row.gridImportKwh ?? 0; acc.inverterImport += row.pvPurchaseKwh ?? 0; acc.distributorExport += row.pndExportKwh ?? 0; acc.inverterExport += row.gridExportKwh ?? 0; acc.cost += netCost(row); if (consumption != null) { acc.consumption += consumption; acc.consumptionMonths += 1; } return acc; }, { production: 0, ownUse: 0, consumption: 0, consumptionMonths: 0, distributorImport: 0, inverterImport: 0, distributorExport: 0, inverterExport: 0, cost: 0 });
   const exportComparison = compareSources(rows, (row) => row.pndExportKwh, (row) => row.gridExportKwh);
   const importComparison = compareSources(rows, (row) => row.gridImportKwh, (row) => row.pvPurchaseKwh);
   const max = Math.max(1, ...rows.map((row) => Math.max(row.pvGenerationKwh ?? 0, row.gridImportKwh ?? 0)));
@@ -212,6 +215,7 @@ function ElectricityView({ rows, intervals, fieldSources, year }: { rows: Electr
     {qualityCount > 0 && <div className="quality-note"><AlertTriangle /> {qualityCount} záznam má opravené období podle pořadí v původním listu; původní datum zůstává uložené pro audit.</div>}
     <div className="kpi-grid">
       <Kpi icon={<Sun />} label="Výroba FVE" value={`${number.format(stats.production)} kWh`} accent="sun" />
+      <Kpi icon={<Gauge />} label="Spotřeba" value={stats.consumptionMonths ? `${number.format(stats.consumption)} kWh` : 'N/A'} detail={`${stats.consumptionMonths} z ${rows.length} měsíců · PND, jinak měnič`} accent="blue" />
       <Kpi icon={<BatteryCharging />} label="Vlastní využití" value={`${number.format(stats.ownUse)} kWh`} detail={`${stats.production ? Math.round(stats.ownUse / stats.production * 100) : 0} % výroby · podle měniče`} accent="mint" />
       <Kpi icon={<Zap />} label="Odběr · distributor" value={`${number.format(stats.distributorImport)} kWh`} detail={`Měnič ${number.format(stats.inverterImport)} kWh`} accent="blue" />
       <Kpi icon={<CircleDollarSign />} label="Čisté náklady" value={money.format(stats.cost)} detail={`Dodávka PND ${number.format(stats.distributorExport)} kWh`} accent="navy" />
