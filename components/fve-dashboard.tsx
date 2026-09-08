@@ -218,6 +218,7 @@ function ElectricityView({ rows, intervals, fieldSources, year }: { rows: Electr
       <Kpi icon={<Gauge />} label="Spotřeba" value={stats.consumptionMonths ? `${number.format(stats.consumption)} kWh` : 'N/A'} detail={`${stats.consumptionMonths} z ${rows.length} měsíců · PND, jinak měnič`} accent="blue" />
       <Kpi icon={<BatteryCharging />} label="Vlastní využití" value={`${number.format(stats.ownUse)} kWh`} detail={`${stats.production ? Math.round(stats.ownUse / stats.production * 100) : 0} % výroby · podle měniče`} accent="mint" />
       <Kpi icon={<Zap />} label="Odběr · distributor" value={`${number.format(stats.distributorImport)} kWh`} detail={`Měnič ${number.format(stats.inverterImport)} kWh`} accent="blue" />
+      <Kpi icon={<Sun />} label="Dodávka · distributor" value={`${number.format(stats.distributorExport)} kWh`} detail={`Měnič ${number.format(stats.inverterExport)} kWh`} accent="sun" />
       <Kpi icon={<CircleDollarSign />} label="Čisté náklady" value={money.format(stats.cost)} detail={`Dodávka PND ${number.format(stats.distributorExport)} kWh`} accent="navy" />
     </div>
     <div className="dashboard-grid">
